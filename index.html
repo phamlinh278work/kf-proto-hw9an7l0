@@ -66,6 +66,8 @@ body.sang #mode button:focus-visible{outline-color:#1c1c1e}
   if (!FILES[mode]) { try { mode = localStorage.getItem("koi-demo-mode"); } catch (e) {} }
   if (!FILES[mode]) mode = "toi";
   params.delete("mode");
+  // The player's own toolbar sits over the phone's bottom buttons unless the window is wide.
+  if (!params.has("clean") && window.innerWidth < 1100) params.set("clean", "1");
   var pass = params.toString();
   pass = pass ? "?" + pass : "";
   var pending = null; // version waiting to be shown once it has loaded
@@ -82,14 +84,48 @@ body.sang #mode button:focus-visible{outline-color:#1c1c1e}
   function currentDom(m){
     try { return decodeURIComponent(frames[m].contentWindow.location.hash.slice(1)); } catch (e) { return ""; }
   }
-  // Move a loaded player to a screen without a reload and without a history entry:
-  // the player redraws on popstate from the hash.
-  function goTo(m, dom){
+  // Each player keeps its own list of visited screens, so "back" works the same
+  // in both versions and survives a switch. The player calls history.pushState
+  // when it opens a screen and history.back() for a back button; both are taken
+  // over here. Nothing is added to the browser's own history.
+  var stacks = {toi: [], sang: []};
+  var rawReplace = {};
+  function install(m){
+    try {
+      var w = frames[m].contentWindow, H = w.history;
+      if (H.__koi) return;
+      H.__koi = true;
+      var rep = H.replaceState.bind(H);
+      rawReplace[m] = rep;
+      stacks[m] = [w.location.hash.slice(1)];
+      H.pushState = function(s, t, url){
+        var d = decodeURIComponent(String(url || "").replace(/^#/, ""));
+        var st = stacks[m];
+        if (d && st[st.length - 1] !== d) st.push(d);
+        rep(s, t, url);
+      };
+      H.back = function(){
+        var st = stacks[m];
+        if (st.length < 2) return;
+        st.pop();
+        rep(null, "", "#" + st[st.length - 1]);
+        w.dispatchEvent(new PopStateEvent("popstate", {state: null}));
+      };
+    } catch (e) {}
+  }
+  // Move a loaded player to a screen without a reload: the player redraws on
+  // popstate from the hash. The visited list comes along, mapped by screen name.
+  function goTo(m, dom, fromStack){
     if (!dom) return;
     try {
       var w = frames[m].contentWindow;
+      if (fromStack) {
+        var mapped = fromStack.map(function(d){ return domOf[m][nameOf[OTHER[m]][d]]; }).filter(Boolean);
+        if (!mapped.length || mapped[mapped.length - 1] !== dom) mapped.push(dom);
+        stacks[m] = mapped;
+      }
       if (w.location.hash.slice(1) === dom) return;
-      w.history.replaceState(null, "", "#" + dom);
+      (rawReplace[m] || w.history.replaceState.bind(w.history))(null, "", "#" + dom);
       w.dispatchEvent(new PopStateEvent("popstate", {state: null}));
     } catch (e) {}
   }
@@ -111,9 +147,11 @@ body.sang #mode button:focus-visible{outline-color:#1c1c1e}
   }
   function onLoad(m){
     loaded[m] = true;
+    install(m);
     if (pending === m) {
       pending = null;
-      goTo(m, domOf[m][nameOf[OTHER[m]][currentDom(OTHER[m])]]);
+      var o = OTHER[m];
+      goTo(m, domOf[m][nameOf[o][currentDom(o)]], loaded[o] ? stacks[o] : null);
       reveal(m);
     }
     // Warm the other version in the background once the first one is up.
@@ -131,7 +169,7 @@ body.sang #mode button:focus-visible{outline-color:#1c1c1e}
       var target = domOf[next][nameOf[prev][currentDom(prev)]];
       mode = next;
       paint(); remember();
-      if (loaded[next]) { pending = null; goTo(next, target); reveal(next); }
+      if (loaded[next]) { pending = null; goTo(next, target, stacks[prev]); reveal(next); }
       else { pending = next; pill.classList.add("busy"); start(next, target); }
     });
   });
